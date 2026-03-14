@@ -231,7 +231,7 @@ def main(
             target_files = find_conflict_files(cwd)
 
     if not target_files:
-        console.print("[green]✅ No merge conflicts found.[/green]")
+        console.print("[green]✅ Found no conflicts — nothing to resolve.[/green]")
         sys.exit(0)
 
     total_conflict_count = 0
@@ -247,7 +247,7 @@ def main(
             pass
 
     if total_conflict_count == 0:
-        console.print("[green]✅ No merge conflicts found.[/green]")
+        console.print("[green]✅ Found no conflicts — nothing to resolve.[/green]")
         sys.exit(0)
 
     console.print(
