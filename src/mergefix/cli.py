@@ -235,14 +235,20 @@ def main(
         sys.exit(0)
 
     total_conflict_count = 0
+    conflicted_files: list[Path] = []
     for f in target_files:
         try:
             content = f.read_text(encoding="utf-8", errors="ignore")
             if "<<<<<<< " in content:
                 parsed = parse_file(content, f)
                 total_conflict_count += parsed.conflict_count
+                conflicted_files.append(f)
         except Exception:
             pass
+
+    if total_conflict_count == 0:
+        console.print("[green]✅ No merge conflicts found.[/green]")
+        sys.exit(0)
 
     console.print(
         Panel(

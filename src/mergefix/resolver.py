@@ -156,3 +156,6 @@ class ConflictResolution:
     @property
     def strategy(self) -> str:
         return "ai"
+
+# Re-export for backward compatibility with integration tests
+from .providers import resolve_conflict
