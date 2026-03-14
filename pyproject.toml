@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "mergefix"
-version = "0.1.0"
+version = "0.2.0"
 description = "AI-powered git merge conflict resolver — fix conflicts in seconds, not minutes"
 readme = "README.md"
 license = { text = "MIT" }
