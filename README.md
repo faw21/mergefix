@@ -2,6 +2,7 @@
 
 [![PyPI version](https://img.shields.io/pypi/v/mergefix.svg)](https://pypi.org/project/mergefix/)
 [![Python](https://img.shields.io/pypi/pyversions/mergefix.svg)](https://pypi.org/project/mergefix/)
+[![Tests](https://github.com/faw21/mergefix/actions/workflows/tests.yml/badge.svg)](https://github.com/faw21/mergefix/actions/workflows/tests.yml)
 
 **AI-powered git merge conflict resolver — run one command, review the diff, apply.**
 
