@@ -1,27 +1,48 @@
-# mergefix — AI Git Merge Conflict Resolver
+# mergefix
 
-AI-powered merge conflict resolver that uses Claude, OpenAI, or local Ollama to resolve git conflicts intelligently — preserving the intent of both sides.
+**AI-powered git merge conflict resolver — run one command, review the diff, apply.**
 
 ```
 $ mergefix
-Scanning for conflicts…  Found 3 files with conflicts
 
-  src/auth.py          2 conflicts
-  config/settings.py   1 conflict
-  tests/test_api.py    1 conflict
+╭──────────────────────────────────────────────────────╮
+│ mergefix  ·  3 files  ·  7 conflicts  ·  provider: claude │
+╰──────────────────────────────────────────────────────╯
 
-Resolving src/auth.py… ━━━━━━━━━━ 2/2 ✓
-Resolving config/settings.py… ━━━━━━━━━━ 1/1 ✓
-Resolving tests/test_api.py… ━━━━━━━━━━ 1/1 ✓
+→ src/auth.py (2 conflicts)
 
-✅ All 4 conflicts resolved  (backups saved as .orig)
+  Conflict 1/2
+  ours: main
+  theirs: feature/oauth
+  ✓ Resolution:
+    def authenticate(user, password):
+        return bcrypt.checkpw(password.encode(), user.password_hash)
+
+  Conflict 2/2
+  ours: main
+  theirs: feature/oauth
+  ✓ Resolution:
+    SESSION_TIMEOUT = 3600  # keep shorter timeout from main
+
+Diff:
+--- a/src/auth.py
++++ b/src/auth.py
+@@ -12,7 +12,4 @@ def get_user(user_id):
+-<<<<<<< HEAD
+-    return hashlib.md5(password.encode()).hexdigest()
+-=======
+-    return bcrypt.checkpw(password.encode(), user.password_hash)
+->>>>>>> feature/oauth
++    return bcrypt.checkpw(password.encode(), user.password_hash)
+
+  Apply resolutions to src/auth.py? [Y/n] y
+  ✓ Applied
+
+✅ All 3 file(s) resolved.
+Run `git diff` to review changes, then `git add` to mark as resolved.
 ```
 
-## Why mergefix?
-
-Manual conflict resolution is tedious and error-prone. mergefix reads both sides of a conflict, understands the intent of each change, and produces a sensible merge — the same way an experienced developer would.
-
-## Installation
+## Install
 
 ```bash
 pip install mergefix
@@ -30,74 +51,91 @@ pip install mergefix
 Set your API key (or use Ollama for free local resolution):
 
 ```bash
-export ANTHROPIC_API_KEY=your-key   # Claude (default, best quality)
+export ANTHROPIC_API_KEY=your-key   # Claude (default, recommended)
 export OPENAI_API_KEY=your-key      # or OpenAI
+# or: mergefix --provider ollama    # local, no API key needed
 ```
 
 ## Usage
 
 ```bash
-# Resolve all conflicts in current repo
+# Resolve all conflicts in the current repo (most common)
 mergefix
 
 # Resolve a specific file
-mergefix src/auth.py
+mergefix src/auth.py src/db.py
 
-# Preview resolutions without writing (dry run)
+# Preview resolutions without writing (safe to run anytime)
 mergefix --preview
 
-# Apply without confirmation prompts
+# Auto-apply all resolutions without prompting (CI/scripting)
 mergefix --yes
 
-# Use local Ollama (no API key needed)
-mergefix --provider ollama --model qwen2.5
+# Keep original files as .orig backups
+mergefix --backup
+
+# Give the AI extra context about your codebase
+mergefix --context "Python web app, prefer async patterns, strict type hints"
+
+# Use local Ollama (free, no API key)
+mergefix --provider ollama
 
 # Use OpenAI
 mergefix --provider openai --model gpt-4o
-
-# No backup files
-mergefix --no-backup
 ```
 
-## Features
+## How it works
 
-- **Intelligent merging** — understands the intent of both conflict sides, not just text diffing
-- **Multi-file** — resolves all conflicted files in a repo in one command
-- **Diff3 support** — handles 3-way conflicts with common ancestor
-- **Multi-conflict** — handles files with multiple conflict blocks
-- **Preview mode** — see what would change before writing (`--preview`)
-- **Git context** — uses surrounding code as context for better resolutions
-- **Exit codes** — `0` = success, `1` = partial failure, `2` = all failed (CI-friendly)
-- **Backup** — saves `.orig` files before overwriting (disable with `--no-backup`)
-- **Local LLM** — works with Ollama (qwen2.5, llama3.2, codellama)
+1. Scans for files with `<<<<<<< ` conflict markers (or use specific files)
+2. Parses each conflict block (supports 2-way and 3-way / diff3 style)
+3. Calls the AI with both sides of each conflict + surrounding context
+4. Displays each resolution in syntax-highlighted code blocks
+5. Shows a colorized unified diff of all changes
+6. Asks for confirmation before writing (skip with `--yes`)
+7. Writes the resolved content; optionally creates `.orig` backups
 
-## Providers
+The AI sees the **full file context**, not just the conflict lines — so it understands the surrounding code and makes semantically correct resolutions.
 
-| Provider | Command | Quality |
-|---|---|---|
-| Claude (default) | `mergefix` | Best — understands intent |
-| OpenAI | `mergefix --provider openai` | Good |
-| Ollama (local, free) | `mergefix --provider ollama` | Decent |
+## Supports
 
-## Ecosystem
+- **Languages**: Any language (Python, JS, TypeScript, Go, Rust, Java, Ruby, etc.)
+- **Conflict styles**: 2-way (default git) and 3-way / diff3
+- **Providers**: Claude (default), OpenAI, Ollama (local, free)
+- **Multiple conflicts**: Resolves all conflicts in a file in one AI call
+- **Multiple files**: Processes all conflicted files in one run
 
-Part of the AI developer workflow toolkit:
+## Pre-merge hook
 
+Add to your workflow to catch issues early:
+
+```bash
+# After a merge, resolve all conflicts and review:
+git merge feature-branch
+mergefix --preview  # preview only
+mergefix            # apply
+git add -A
+git commit
 ```
-standup-ai      # 1. Morning: generate daily standup from git commits
-critiq          # 2. Pre-commit: AI code review + auto-fix
-gpr             # 3. Commit/PR: generate commit messages and PR descriptions
-mergefix        # 4. Merge: resolve conflicts intelligently
-gitbrief        # 5. Review: pack context for LLM PR review
-changelog-ai    # 6. Release: generate CHANGELOG from commits
+
+Or as a one-liner for scripting:
+
+```bash
+git merge feature-branch && mergefix --yes && git add -A && git commit -m "resolve merge conflicts"
 ```
 
-- [critiq](https://github.com/faw21/critiq) — AI code reviewer (pre-push)
-- [gpr](https://github.com/faw21/gpr) — AI commit message + PR description generator
-- [gitbrief](https://github.com/faw21/gitbrief) — Git-history-aware LLM context packer
-- [standup-ai](https://github.com/faw21/standup-ai) — Daily standup generator
-- [changelog-ai](https://github.com/faw21/changelog-ai) — AI changelog generator
+## Part of the git toolkit
+
+mergefix is part of a suite of AI-powered git tools:
+
+| Tool | What it does |
+|------|--------------|
+| **[gitbrief](https://github.com/faw21/gitbrief)** | Pack your git history into LLM context |
+| **[gpr](https://github.com/faw21/gpr)** | Generate PR descriptions and commit messages |
+| **[critiq](https://github.com/faw21/critiq)** | AI code reviewer before you push |
+| **[standup-ai](https://github.com/faw21/standup-ai)** | Generate daily standups from git history |
+| **[changelog-ai](https://github.com/faw21/changelog-ai)** | Generate CHANGELOG from commits |
+| **mergefix** | **Resolve merge conflicts with AI** |
 
 ## License
 
-MIT — see [LICENSE](LICENSE)
+MIT

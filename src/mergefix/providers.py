@@ -1,107 +1,78 @@
-"""
-LLM providers for mergefix.
-
-Minimal, focused on conflict resolution quality.
-"""
+"""LLM provider wrappers for mergefix."""
 
 from __future__ import annotations
 
 import os
 from typing import Protocol
 
-from dotenv import load_dotenv
-
-load_dotenv(
-    "/Users/aaronwu/Local/my-projects/give-it-all/.env", override=True
-)
-
 
 class LLMProvider(Protocol):
-    def complete(self, system: str, user: str) -> str:
-        ...
+    def resolve(self, prompt: str) -> str: ...
 
 
-# ── Claude ────────────────────────────────────────────────────────────────────
+# ── Anthropic ─────────────────────────────────────────────────────────────────
 
-class ClaudeProvider:
-    def __init__(self, model: str = "claude-haiku-4-5-20251001") -> None:
-        import anthropic
-
-        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-        if not api_key:
-            raise RuntimeError(
-                "ANTHROPIC_API_KEY is not set. "
-                "Export it or use --provider ollama for free local resolution."
-            )
-        self._client = anthropic.Anthropic(api_key=api_key)
-        self._model = model
-
-    def complete(self, system: str, user: str) -> str:
-        msg = self._client.messages.create(
-            model=self._model,
-            max_tokens=4096,
-            system=system,
-            messages=[{"role": "user", "content": user}],
-        )
-        return msg.content[0].text.strip()
+def _anthropic_resolve(prompt: str, model: str) -> str:
+    import anthropic
+    client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+    message = client.messages.create(
+        model=model,
+        max_tokens=4096,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    return message.content[0].text
 
 
 # ── OpenAI ────────────────────────────────────────────────────────────────────
 
-class OpenAIProvider:
-    def __init__(self, model: str = "gpt-4o-mini") -> None:
-        import openai
-
-        api_key = os.environ.get("OPENAI_API_KEY", "")
-        if not api_key:
-            raise RuntimeError("OPENAI_API_KEY is not set.")
-        self._client = openai.OpenAI(api_key=api_key)
-        self._model = model
-
-    def complete(self, system: str, user: str) -> str:
-        resp = self._client.chat.completions.create(
-            model=self._model,
-            max_completion_tokens=4096,
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
-        )
-        return (resp.choices[0].message.content or "").strip()
+def _openai_resolve(prompt: str, model: str) -> str:
+    from openai import OpenAI
+    client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+    resp = client.chat.completions.create(
+        model=model,
+        max_completion_tokens=4096,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    return resp.choices[0].message.content or ""
 
 
 # ── Ollama ────────────────────────────────────────────────────────────────────
 
-class OllamaProvider:
-    def __init__(self, model: str = "qwen2.5:1.5b") -> None:
-        import openai
-
-        self._client = openai.OpenAI(
-            base_url="http://localhost:11434/v1",
-            api_key="ollama",
-        )
-        self._model = model
-
-    def complete(self, system: str, user: str) -> str:
-        resp = self._client.chat.completions.create(
-            model=self._model,
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
-        )
-        return (resp.choices[0].message.content or "").strip()
+def _ollama_resolve(prompt: str, model: str) -> str:
+    from openai import OpenAI
+    client = OpenAI(
+        base_url="http://localhost:11434/v1",
+        api_key="ollama",
+    )
+    resp = client.chat.completions.create(
+        model=model,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    return resp.choices[0].message.content or ""
 
 
-# ── Factory ───────────────────────────────────────────────────────────────────
+# ── Public factory ────────────────────────────────────────────────────────────
 
-def make_provider(provider: str, model: str | None) -> LLMProvider:
+DEFAULT_MODELS = {
+    "claude": "claude-haiku-4-5",
+    "openai": "gpt-5-nano",
+    "ollama": "qwen2.5:1.5b",
+}
+
+
+def resolve_conflict(
+    prompt: str,
+    provider: str = "claude",
+    model: str | None = None,
+) -> str:
+    """Call the LLM and return raw response text."""
+    resolved_model = model or DEFAULT_MODELS.get(provider, DEFAULT_MODELS["claude"])
+
     if provider == "claude":
-        return ClaudeProvider(
-            model=model or "claude-haiku-4-5-20251001"
-        )
-    if provider == "openai":
-        return OpenAIProvider(model=model or "gpt-4o-mini")
-    if provider == "ollama":
-        return OllamaProvider(model=model or "qwen2.5:1.5b")
-    raise ValueError(f"Unknown provider: {provider!r}")
+        return _anthropic_resolve(prompt, resolved_model)
+    elif provider == "openai":
+        return _openai_resolve(prompt, resolved_model)
+    elif provider == "ollama":
+        return _ollama_resolve(prompt, resolved_model)
+    else:
+        raise ValueError(f"Unknown provider: {provider!r}")
