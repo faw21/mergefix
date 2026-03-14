@@ -4,7 +4,7 @@ mergefix CLI — AI-powered git merge conflict resolver.
 Usage:
     mergefix                          # resolve all conflicted files in cwd
     mergefix src/auth.py              # resolve a specific file
-    mergefix --preview                # show resolutions without writing
+    mergefix --dry-run                # show resolutions without writing
     mergefix --provider ollama        # use local Ollama (free, no API key)
 """
 
@@ -22,9 +22,9 @@ from rich.syntax import Syntax
 from rich.text import Text
 
 from . import __version__
-from .parser import ParsedFile, apply_resolutions, find_conflict_files, parse_conflicts
-from .providers import make_provider
-from .resolver import ResolutionResult, resolve_file
+from .parser import ParsedFile, apply_resolutions, find_conflict_files, parse_file
+from .providers import resolve_conflict
+from .resolver import build_prompt, clean_response
 
 console = Console()
 
@@ -49,130 +49,6 @@ def _show_diff(original: str, resolved: str, filename: str) -> None:
         console.print(Syntax(diff_text, "diff", theme="monokai"))
     else:
         console.print("[dim]  (no visible changes)[/dim]")
-
-
-def _apply_to_file(
-    parsed: ParsedFile,
-    results: list[ResolutionResult],
-    backup: bool,
-) -> bool:
-    """
-    Write resolved content back to the file.
-    Returns True on success.
-    """
-    successful = [r for r in results if r.success]
-    if len(successful) != len(parsed.conflicts):
-        return False
-
-    resolved_content = apply_resolutions(
-        parsed.original_content,
-        parsed.conflicts,
-        [r.resolution for r in results],
-    )
-
-    if backup:
-        backup_path = parsed.path.with_suffix(parsed.path.suffix + ".orig")
-        shutil.copy2(parsed.path, backup_path)
-
-    parsed.path.write_text(resolved_content, encoding="utf-8")
-    return True
-
-
-def _resolve_single_file(
-    path: Path,
-    provider_name: str,
-    model: str | None,
-    preview: bool,
-    backup: bool,
-    auto_apply: bool,
-) -> bool:
-    """
-    Process one file. Returns True if fully resolved.
-    """
-    content = path.read_text(encoding="utf-8")
-    parsed = parse_conflicts(content, path)
-
-    if not parsed.has_conflicts:
-        console.print(f"[dim]{path}: no conflicts[/dim]")
-        return True
-
-    rel_path = str(path.relative_to(Path.cwd())) if path.is_relative_to(Path.cwd()) else str(path)
-    console.print(
-        f"\n[bold cyan]→ {rel_path}[/bold cyan] "
-        f"[dim]({parsed.conflict_count} conflict{'' if parsed.conflict_count == 1 else 's'})[/dim]"
-    )
-
-    # Build provider lazily (only when we have conflicts)
-    try:
-        provider = make_provider(provider_name, model)
-    except RuntimeError as exc:
-        console.print(f"[red]✗ {exc}[/red]")
-        return False
-
-    # Resolve all conflicts
-    with console.status(f"Resolving {parsed.conflict_count} conflict(s) with AI…"):
-        results = resolve_file(parsed, provider)
-
-    # Show each resolution
-    all_ok = True
-    for i, result in enumerate(results, 1):
-        conflict = result.conflict
-        label = f"Conflict {i}/{len(results)}"
-
-        if not result.success:
-            console.print(f"  [red]✗ {label}: {result.error}[/red]")
-            all_ok = False
-            continue
-
-        console.print(f"\n  [bold]{label}[/bold]")
-        console.print(f"  [dim]ours: {conflict.ours_label[:50]}[/dim]")
-        console.print(f"  [dim]theirs: {conflict.theirs_label[:50]}[/dim]")
-
-        # Show what was resolved
-        console.print("  [green]✓ Resolution:[/green]")
-        if result.resolution.strip():
-            console.print(
-                Syntax(
-                    result.resolution,
-                    _guess_language(path),
-                    theme="monokai",
-                    background_color="default",
-                )
-            )
-        else:
-            console.print("  [dim](empty — both sides deleted this section)[/dim]")
-
-    if not all_ok:
-        return False
-
-    if preview:
-        console.print("\n[yellow]Preview mode — not writing changes.[/yellow]")
-        return True
-
-    # Show full diff before writing
-    resolved_content = apply_resolutions(
-        parsed.original_content,
-        parsed.conflicts,
-        [r.resolution for r in results],
-    )
-
-    console.print("\n[bold]Diff:[/bold]")
-    _show_diff(parsed.original_content, resolved_content, rel_path)
-
-    # Confirm unless --yes
-    if not auto_apply:
-        apply = click.confirm(f"\n  Apply resolutions to {rel_path}?", default=True)
-        if not apply:
-            console.print("[dim]  Skipped.[/dim]")
-            return False
-
-    if _apply_to_file(parsed, results, backup):
-        backup_note = " (backup: .orig)" if backup else ""
-        console.print(f"  [green]✓ Applied{backup_note}[/green]")
-        return True
-
-    console.print("[red]  ✗ Failed to write file.[/red]")
-    return False
 
 
 def _guess_language(path: Path) -> str:
@@ -200,6 +76,97 @@ def _guess_language(path: Path) -> str:
     return ext_map.get(path.suffix.lower(), "text")
 
 
+def _resolve_single_file(
+    path: Path,
+    provider_name: str,
+    model: str | None,
+    dry_run: bool,
+    backup: bool,
+    auto_apply: bool,
+) -> bool:
+    """
+    Process one file. Returns True if fully resolved.
+    """
+    content = path.read_text(encoding="utf-8")
+    parsed = parse_file(content, path)
+
+    if not parsed.has_conflicts:
+        console.print(f"[dim]{path}: no conflicts[/dim]")
+        return True
+
+    rel_path = str(path.relative_to(Path.cwd())) if path.is_relative_to(Path.cwd()) else str(path)
+    console.print(
+        f"\n[bold cyan]→ {rel_path}[/bold cyan] "
+        f"[dim]({parsed.conflict_count} conflict{'' if parsed.conflict_count == 1 else 's'})[/dim]"
+    )
+
+    file_ext = path.suffix.lower()
+    resolutions: list[str] = []
+    all_ok = True
+
+    for i, conflict in enumerate(parsed.conflicts, 1):
+        label = f"Conflict {i}/{len(parsed.conflicts)}"
+        prompt = build_prompt(conflict, file_ext)
+
+        with console.status(f"Resolving {label} with AI…"):
+            try:
+                raw = resolve_conflict(prompt, provider_name, model)
+                resolution = clean_response(raw)
+                if not resolution.endswith("\n"):
+                    resolution += "\n"
+                resolutions.append(resolution)
+            except Exception as exc:
+                console.print(f"  [red]✗ {label}: {exc}[/red]")
+                all_ok = False
+                resolutions.append("")
+                continue
+
+        console.print(f"\n  [bold]{label}[/bold]")
+        console.print(f"  [dim]ours: {conflict.ours_label[:50]}[/dim]")
+        console.print(f"  [dim]theirs: {conflict.theirs_label[:50]}[/dim]")
+
+        console.print("  [green]✓ Resolution:[/green]")
+        if resolution.strip():
+            console.print(
+                Syntax(
+                    resolution,
+                    _guess_language(path),
+                    theme="monokai",
+                    background_color="default",
+                )
+            )
+        else:
+            console.print("  [dim](empty — both sides deleted this section)[/dim]")
+
+    if not all_ok:
+        return False
+
+    if dry_run:
+        console.print("\n[yellow]Dry-run mode — not writing changes.[/yellow]")
+        return True
+
+    # Show full diff before writing
+    resolved_content = apply_resolutions(parsed.original_content, parsed.conflicts, resolutions)
+
+    console.print("\n[bold]Diff:[/bold]")
+    _show_diff(parsed.original_content, resolved_content, rel_path)
+
+    if not auto_apply:
+        apply = click.confirm(f"\n  Apply resolutions to {rel_path}?", default=True)
+        if not apply:
+            console.print("[dim]  Skipped.[/dim]")
+            return False
+
+    if backup:
+        backup_path = parsed.path.with_suffix(parsed.path.suffix + ".orig")
+        shutil.copy2(parsed.path, backup_path)
+
+    parsed.path.write_text(resolved_content, encoding="utf-8")
+    backup_note = " (backup: .orig)" if backup else ""
+    console.print(f"  [green]✓ Applied{backup_note}[/green]")
+    return True
+
+
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
 @click.command()
@@ -215,13 +182,12 @@ def _guess_language(path: Path) -> str:
 )
 @click.option("--model", "-m", default=None, help="Model override.")
 @click.option(
-    "--preview",
+    "--dry-run",
     is_flag=True,
     help="Show resolutions without writing to files.",
 )
 @click.option(
-    "--yes",
-    "-y",
+    "--auto",
     is_flag=True,
     help="Apply all resolutions without prompting.",
 )
@@ -239,8 +205,8 @@ def main(
     files: tuple[str, ...],
     provider: str,
     model: str | None,
-    preview: bool,
-    yes: bool,
+    dry_run: bool,
+    auto: bool,
     backup: bool,
     context: str | None,
 ) -> None:
@@ -252,13 +218,12 @@ def main(
 
       mergefix                         # resolve all conflicts in cwd
       mergefix src/auth.py             # resolve one file
-      mergefix --preview               # show resolutions without writing
-      mergefix --yes                   # auto-apply (no prompts)
+      mergefix --dry-run               # show resolutions without writing
+      mergefix --auto                  # auto-apply (no prompts)
       mergefix --provider ollama       # use local model (free)
     """
     cwd = Path.cwd()
 
-    # Determine files to process
     if files:
         target_files = [Path(f) for f in files]
     else:
@@ -269,13 +234,12 @@ def main(
         console.print("[green]✅ No merge conflicts found.[/green]")
         sys.exit(0)
 
-    # Count total conflicts for summary
     total_conflict_count = 0
     for f in target_files:
         try:
             content = f.read_text(encoding="utf-8", errors="ignore")
             if "<<<<<<< " in content:
-                parsed = parse_conflicts(content, f)
+                parsed = parse_file(content, f)
                 total_conflict_count += parsed.conflict_count
         except Exception:
             pass
@@ -301,9 +265,9 @@ def main(
                 path=f,
                 provider_name=provider,
                 model=model,
-                preview=preview,
+                dry_run=dry_run,
                 backup=backup,
-                auto_apply=yes,
+                auto_apply=auto,
             )
             if ok:
                 resolved_files += 1
@@ -313,13 +277,12 @@ def main(
             console.print(f"[red]✗ {f}: {exc}[/red]")
             failed_files += 1
 
-    # Summary
     console.print()
     if failed_files == 0:
         console.print(
             f"[bold green]✅ All {resolved_files} file(s) resolved.[/bold green]"
         )
-        if not preview:
+        if not dry_run:
             console.print("[dim]Run `git diff` to review changes, then `git add` to mark as resolved.[/dim]")
     else:
         console.print(

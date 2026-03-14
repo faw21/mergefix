@@ -1,5 +1,8 @@
 # mergefix
 
+[![PyPI version](https://img.shields.io/pypi/v/mergefix.svg)](https://pypi.org/project/mergefix/)
+[![Python](https://img.shields.io/pypi/pyversions/mergefix.svg)](https://pypi.org/project/mergefix/)
+
 **AI-powered git merge conflict resolver — run one command, review the diff, apply.**
 
 ```

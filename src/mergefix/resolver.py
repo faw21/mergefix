@@ -4,7 +4,37 @@ Build prompts and parse AI responses for merge conflict resolution.
 
 from __future__ import annotations
 
-from .parser import ConflictBlock
+from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+from .parser import ConflictBlock, ParsedFile
+
+if TYPE_CHECKING:
+    from .providers import LLMProvider
+
+
+@dataclass
+class ResolutionResult:
+    """Result of resolving a single conflict block."""
+    conflict: ConflictBlock
+    resolution: str
+    success: bool
+    error: str = ""
+
+
+def resolve_file(parsed: ParsedFile, provider: "LLMProvider") -> list[ResolutionResult]:
+    """Resolve all conflict blocks in a parsed file using the given LLM provider."""
+    file_ext = parsed.path.suffix.lower()
+    results: list[ResolutionResult] = []
+    for conflict in parsed.conflicts:
+        try:
+            prompt = build_prompt(conflict, file_ext)
+            raw = provider.resolve(prompt)
+            resolution = clean_response(raw)
+            results.append(ResolutionResult(conflict=conflict, resolution=resolution, success=True))
+        except Exception as exc:
+            results.append(ResolutionResult(conflict=conflict, resolution="", success=False, error=str(exc)))
+    return results
 
 
 _SYSTEM_HINT = """\
@@ -79,3 +109,50 @@ def clean_response(response: str) -> str:
             end = len(lines) - 1
         text = "\n".join(lines[start:end]).strip()
     return text
+
+
+# Alias for backward compat
+_strip_fences = clean_response
+
+
+# ── Bridge for conflict.py API ────────────────────────────────────────────────
+
+def resolve_conflict(
+    conflict: "Conflict",
+    provider: str = "claude",
+    model: str | None = None,
+) -> "ConflictResolution":
+    """
+    Resolve a single Conflict (from conflict.py) using AI.
+    
+    Returns a ConflictResolution dataclass with the resolved text.
+    """
+    from .conflict import Conflict
+    from .providers import build_resolution_prompt, call_llm, detect_language
+    
+    lang_hint = detect_language(conflict.file_path)
+    system, user = build_resolution_prompt(
+        file_path=conflict.file_path,
+        ours_label=conflict.ours_label,
+        theirs_label=conflict.theirs_label,
+        ours=conflict.ours,
+        base=conflict.base,
+        theirs=conflict.theirs,
+        context_before=conflict.context_before,
+        context_after=conflict.context_after,
+        language_hint=lang_hint,
+    )
+    resolved_text = call_llm(system, user, provider=provider, model=model)
+    resolved_text = clean_response(resolved_text)
+    return ConflictResolution(conflict=conflict, resolved_text=resolved_text)
+
+
+@dataclass
+class ConflictResolution:
+    """Result of resolving a Conflict from conflict.py."""
+    conflict: "Conflict"
+    resolved_text: str
+    
+    @property
+    def strategy(self) -> str:
+        return "ai"

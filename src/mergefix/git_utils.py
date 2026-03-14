@@ -8,6 +8,9 @@ import subprocess
 from pathlib import Path
 from typing import List, Optional, Tuple
 
+# Re-export so callers can do: from mergefix.git_utils import parse_conflicts
+from .parser import parse_conflicts as parse_conflicts  # noqa: F401
+
 
 class GitError(Exception):
     pass

@@ -16,7 +16,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterator
+from typing import Union
 
 
 CONFLICT_START = re.compile(r"^<<<<<<< (.+)$")
@@ -36,6 +36,8 @@ class ConflictBlock:
     ours: str        # content from HEAD side
     base: str        # content from common ancestor (diff3 only, may be empty)
     theirs: str      # content from merging branch
+    context_before: str = ""  # lines before the conflict (for AI context)
+    context_after: str = ""   # lines after the conflict (for AI context)
 
 
 @dataclass
@@ -129,33 +131,64 @@ def parse_conflicts(content: str, path: Path | None = None) -> ParsedFile:
     return result
 
 
-def find_conflict_files(root: Path) -> list[Path]:
+def find_conflict_files(
+    roots: Union[Path, list[Path], list[str], None] = None,
+) -> list[Path]:
     """
-    Return all files under root that contain conflict markers.
+    Return all files under root(s) that contain conflict markers.
     Skips binary files and common non-source directories.
+
+    Accepts: a single Path, a list of Paths, or a list of path strings.
+    Defaults to cwd if not provided.
     """
     SKIP_DIRS = {
         ".git", ".hg", ".svn",
         "node_modules", "__pycache__", ".venv", "venv",
         ".tox", "dist", "build", ".eggs",
     }
+
+    if roots is None:
+        search_roots = [Path(".")]
+    elif isinstance(roots, (str, Path)):
+        search_roots = [Path(roots)]
+    else:
+        search_roots = [Path(r) for r in roots]
+
     results: list[Path] = []
+    for root in search_roots:
+        for p in root.rglob("*"):
+            if not p.is_file():
+                continue
+            if any(part in SKIP_DIRS for part in p.parts):
+                continue
+            try:
+                content = p.read_text(encoding="utf-8", errors="strict")
+            except (UnicodeDecodeError, PermissionError):
+                continue
+            if "<<<<<<< " in content:
+                results.append(p)
 
-    for p in root.rglob("*"):
-        if not p.is_file():
-            continue
-        # Skip files in ignored directories
-        if any(part in SKIP_DIRS for part in p.parts):
-            continue
-        # Skip binary files (quick heuristic)
-        try:
-            content = p.read_text(encoding="utf-8", errors="strict")
-        except (UnicodeDecodeError, PermissionError):
-            continue
-        if "<<<<<<< " in content:
-            results.append(p)
+    return sorted(set(results))
 
-    return sorted(results)
+
+def parse_file(content: str, path: Path | None = None, context_lines: int = 5) -> ParsedFile:
+    """
+    Parse conflict markers and populate context_before/after on each block.
+
+    Wraps parse_conflicts() and fills in context window for AI prompting.
+    """
+    result = parse_conflicts(content, path)
+    lines = content.splitlines()
+    for conflict in result.conflicts:
+        before_start = max(0, conflict.start_line - context_lines)
+        conflict.context_before = "\n".join(lines[before_start:conflict.start_line])
+        after_end = min(len(lines), conflict.end_line + 1 + context_lines)
+        conflict.context_after = "\n".join(lines[conflict.end_line + 1:after_end])
+    return result
+
+
+# Alias for backward compatibility
+ParseResult = ParsedFile
 
 
 def apply_resolutions(
@@ -185,3 +218,7 @@ def apply_resolutions(
         lines[start : end + 1] = [replacement] if replacement else []
 
     return "".join(lines)
+
+
+# Alias: singular name expected by new CLI / tests
+apply_resolution = apply_resolutions

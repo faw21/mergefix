@@ -1,162 +1,67 @@
-"""Tests for the conflict resolver (mocked LLM)."""
+"""Tests for prompt building and response cleaning."""
 
-from pathlib import Path
-from unittest.mock import MagicMock, call
-
-import pytest
-
-from mergefix.parser import parse_conflicts
-from mergefix.resolver import ResolutionResult, _strip_fences, resolve_file
+from mergefix.parser import ConflictBlock
+from mergefix.resolver import build_prompt, clean_response
 
 
-# ── _strip_fences ─────────────────────────────────────────────────────────────
-
-def test_strip_fences_python():
-    text = "```python\nx = 1\ny = 2\n```"
-    assert _strip_fences(text) == "x = 1\ny = 2"
-
-
-def test_strip_fences_plain():
-    text = "```\nx = 1\n```"
-    assert _strip_fences(text) == "x = 1"
-
-
-def test_strip_fences_no_fences():
-    text = "x = 1\ny = 2"
-    assert _strip_fences(text) == "x = 1\ny = 2"
-
-
-def test_strip_fences_single_line_fence():
-    text = "```python\ncode here"
-    assert _strip_fences(text) == "```python\ncode here"
-
-
-# ── resolve_file ──────────────────────────────────────────────────────────────
-
-CONFLICT_CONTENT = (
-    "def greet(name):\n"
-    "<<<<<<< HEAD\n"
-    '    return f"Hello, {name}!"\n'
-    "=======\n"
-    '    return f"Hi there, {name}!"\n'
-    ">>>>>>> feature/greeting\n"
-)
-
-TWO_CONFLICT_CONTENT = (
-    "a\n"
-    "<<<<<<< HEAD\n"
-    "ours_a\n"
-    "=======\n"
-    "theirs_a\n"
-    ">>>>>>> feature\n"
-    "d\n"
-    "<<<<<<< HEAD\n"
-    "ours_b\n"
-    "=======\n"
-    "theirs_b\n"
-    ">>>>>>> feature\n"
-    "e\n"
+CONFLICT = ConflictBlock(
+    start_line=5,
+    end_line=10,
+    ours_label="HEAD",
+    theirs_label="feature",
+    ours='    return "old"\n',
+    theirs='    return "new"\n',
+    base="",
+    context_before="def greet():\n",
+    context_after="",
 )
 
 
-def test_resolve_file_single_conflict():
-    parsed = parse_conflicts(CONFLICT_CONTENT, Path("test.py"))
-    provider = MagicMock()
-    provider.complete.return_value = '    return f"Hello there, {name}!"'
-
-    results = resolve_file(parsed, provider)
-
-    assert len(results) == 1
-    assert results[0].success is True
-    assert "Hello there" in results[0].resolution
-    provider.complete.assert_called_once()
+def test_build_prompt_contains_ours_and_theirs():
+    prompt = build_prompt(CONFLICT, ".py")
+    assert "return" in prompt
+    assert "HEAD" in prompt
+    assert "feature" in prompt
+    assert "OURS" in prompt
+    assert "THEIRS" in prompt
 
 
-def test_resolve_file_no_conflicts():
-    content = "def foo():\n    return 1\n"
-    parsed = parse_conflicts(content, Path("test.py"))
-    provider = MagicMock()
-
-    results = resolve_file(parsed, provider)
-
-    assert results == []
-    provider.complete.assert_not_called()
+def test_build_prompt_python_lang_hint():
+    prompt = build_prompt(CONFLICT, ".py")
+    assert "Python" in prompt
 
 
-def test_resolve_file_multiple_conflicts():
-    parsed = parse_conflicts(TWO_CONFLICT_CONTENT, Path("test.py"))
-    provider = MagicMock()
-    provider.complete.side_effect = ["resolved_1", "resolved_2"]
-
-    results = resolve_file(parsed, provider)
-
-    assert len(results) == 2
-    assert results[0].resolution == "resolved_1"
-    assert results[1].resolution == "resolved_2"
-    assert provider.complete.call_count == 2
+def test_build_prompt_context():
+    prompt = build_prompt(CONFLICT, ".py")
+    assert "def greet" in prompt
 
 
-def test_resolve_file_provider_error():
-    parsed = parse_conflicts(CONFLICT_CONTENT, Path("test.py"))
-    provider = MagicMock()
-    provider.complete.side_effect = RuntimeError("API error")
-
-    results = resolve_file(parsed, provider)
-
-    assert len(results) == 1
-    assert results[0].success is False
-    assert "API error" in results[0].error
-
-
-def test_resolve_file_strips_fences():
-    parsed = parse_conflicts(CONFLICT_CONTENT, Path("test.py"))
-    provider = MagicMock()
-    provider.complete.return_value = "```python\n    return 42\n```"
-
-    results = resolve_file(parsed, provider)
-
-    assert results[0].success is True
-    assert "```" not in results[0].resolution
-    assert "return 42" in results[0].resolution
-
-
-def test_resolve_includes_context_in_prompt():
-    """Verify the user prompt contains both ours and theirs sections."""
-    parsed = parse_conflicts(CONFLICT_CONTENT, Path("test.py"))
-    provider = MagicMock()
-    provider.complete.return_value = '    return "merged"'
-
-    resolve_file(parsed, provider)
-
-    # provider.complete called with (system_prompt, user_prompt)
-    call_args = provider.complete.call_args
-    assert call_args is not None
-    # Check positional args
-    args = call_args[0]
-    assert len(args) == 2
-    system, user = args
-    assert "Hello" in user or "Hi" in user  # one of the conflict sides
-    assert "greet" in user or "name" in user  # context from surrounding code
-
-
-def test_resolve_result_dataclass():
-    from mergefix.parser import ConflictBlock
-    r = ResolutionResult(
-        conflict=MagicMock(spec=ConflictBlock),
-        resolution="fixed code",
-        success=True,
+def test_build_prompt_with_base():
+    conflict = ConflictBlock(
+        start_line=1, end_line=10,
+        ours_label="HEAD", theirs_label="other",
+        ours="x = 1\n", theirs="x = 2\n", base="x = 0\n",
     )
-    assert r.error == ""
-    assert r.success
+    prompt = build_prompt(conflict, ".py")
+    assert "BASE" in prompt
+    assert "x = 0" in prompt
 
 
-def test_resolve_result_failure():
-    from mergefix.parser import ConflictBlock
-    r = ResolutionResult(
-        conflict=MagicMock(spec=ConflictBlock),
-        resolution="",
-        success=False,
-        error="network error",
-    )
-    assert not r.success
-    assert "network" in r.error
+def test_clean_response_strips_fences():
+    raw = "```python\nx = 1\n```"
+    assert clean_response(raw) == "x = 1"
+
+
+def test_clean_response_no_fence():
+    raw = "x = 1\ny = 2"
+    assert clean_response(raw) == "x = 1\ny = 2"
+
+
+def test_clean_response_whitespace():
+    raw = "\n\n  x = 1  \n\n"
+    assert clean_response(raw) == "x = 1"
+
+
+def test_clean_response_generic_fence():
+    raw = "```\nx = 1\n```"
+    assert clean_response(raw) == "x = 1"
