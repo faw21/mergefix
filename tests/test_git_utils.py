@@ -56,3 +56,54 @@ def test_find_conflicted_files_empty(mock_run):
     mock_run.return_value = ""
     files = find_conflicted_files("/fake/repo")
     assert files == []
+
+
+@patch("mergefix.git_utils._run")
+def test_stage_file(mock_run, tmp_path):
+    from mergefix.git_utils import stage_file
+    mock_run.return_value = ""
+    stage_file(str(tmp_path), "foo.py")
+    mock_run.assert_called_once_with(["git", "add", "foo.py"], cwd=str(tmp_path))
+
+
+@patch("subprocess.run")
+def test_get_repo_root_success(mock_subproc):
+    mock_subproc.return_value = MagicMock(returncode=0, stdout="/some/repo\n")
+    root = get_repo_root()
+    assert root == "/some/repo"
+
+
+@patch("subprocess.run")
+def test_get_repo_root_not_git(mock_subproc):
+    mock_subproc.return_value = MagicMock(returncode=128, stdout="")
+    root = get_repo_root()
+    assert root is None
+
+
+@patch("mergefix.git_utils._run")
+def test_get_branch_names_simple(mock_run, tmp_path):
+    from mergefix.git_utils import get_branch_names
+    mock_run.return_value = "main"
+    ours, theirs = get_branch_names(str(tmp_path))
+    assert ours == "main"
+    assert theirs == "MERGE_HEAD"
+
+
+@patch("mergefix.git_utils._run")
+def test_get_branch_names_with_merge_msg(mock_run, tmp_path):
+    from mergefix.git_utils import get_branch_names
+    mock_run.return_value = "main"
+    git_dir = tmp_path / ".git"
+    git_dir.mkdir()
+    (git_dir / "MERGE_MSG").write_text("Merge branch 'feature' into main\n")
+    ours, theirs = get_branch_names(str(tmp_path))
+    assert ours == "main"
+    assert theirs == "feature"
+
+
+@patch("subprocess.run")
+def test_run_raises_on_stderr(mock_subproc):
+    from mergefix.git_utils import _run, GitError
+    mock_subproc.return_value = MagicMock(returncode=1, stderr="fatal: bad flag", stdout="")
+    with pytest.raises(GitError, match="fatal: bad flag"):
+        _run(["git", "bad-command"], cwd=".")
